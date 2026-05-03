@@ -5,6 +5,8 @@ import os
 import zipfile
 from io import BytesIO
 from PIL import Image
+import streamlit.components.v1 as components
+import base64
 
 # --- Core Logic Functions ---
 
@@ -72,26 +74,21 @@ def extract_stickers_logic(img):
     return results
 
 def get_study_steps_logic(img):
-    """Generates a list of images representing each step of the process."""
+    """Generates a dictionary of images representing each step of the process."""
     steps = {}
-    
-    # Step 1: Original
     steps["1. Original"] = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     
-    # Step 2: HSV Mask
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     lower_white = np.array([0, 0, 190]) 
     upper_white = np.array([180, 50, 255])
     white_mask = cv2.inRange(hsv, lower_white, upper_white)
     steps["2. HSV White Mask"] = white_mask
     
-    # Step 3: Cleaned Mask
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     cleaned_mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, kernel)
     cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, kernel)
     steps["3. Morphological Cleaning"] = cleaned_mask
     
-    # Step 4: Detections
     contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     det_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     valid_contours = []
@@ -103,7 +100,6 @@ def get_study_steps_logic(img):
     steps["4. Object Detection"] = det_img
     
     if valid_contours:
-        # Detailed steps for one sample
         valid_contours.sort(key=lambda c: (cv2.boundingRect(c)[1], cv2.boundingRect(c)[0]))
         sample_cnt = valid_contours[0]
         x, y, w, h = cv2.boundingRect(sample_cnt)
@@ -111,19 +107,16 @@ def get_study_steps_logic(img):
         x1, y1 = max(0, x - pad), max(0, y - pad)
         x2, y2 = min(img.shape[1], x + w + pad), min(img.shape[0], y + h + pad)
         
-        # Step 5: Solid Mask
         local_mask = np.zeros((y2 - y1, x2 - x1), dtype=np.uint8)
         shifted_cnt = sample_cnt - [x1, y1]
         cv2.drawContours(local_mask, [shifted_cnt], -1, 255, -1)
         steps["5. Solid Filled Mask (Internal Detail Preserved)"] = local_mask
         
-        # Step 6: Shadow
         shadow_blur = cv2.GaussianBlur(local_mask, (51, 51), 0)
         M = np.float32([[1, 0, 12], [0, 1, 12]])
         shadow_shifted = cv2.warpAffine(shadow_blur, M, (x2-x1, y2-y1))
         steps["6. Generated Shadow Layer"] = shadow_shifted
         
-        # Step 7: Final
         final_png = np.zeros((y2 - y1, x2 - x1, 4), dtype=np.uint8)
         final_png[:, :, 3] = (shadow_shifted * 0.45).astype(np.uint8)
         sticker_rgba = cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2BGRA)
@@ -137,26 +130,6 @@ def get_study_steps_logic(img):
 
     return steps
 
-# --- Streamlit UI ---
-st.set_page_config(page_title="Sticker AI Hub", layout="wide")
-
-# Navigation
-st.sidebar.title("🧭 Navigation")
-page = st.sidebar.radio("Go to", ["🏠 Main Extractor", "🎓 Study Steps (Tutorial)"])
-
-# Shared State
-if 'extracted_stickers' not in st.session_state:
-    st.session_state.extracted_stickers = None
-if 'study_data' not in st.session_state:
-    st.session_state.study_data = None
-if 'last_file' not in st.session_state:
-    st.session_state.last_file = None
-
-import streamlit.components.v1 as components
-import base64
-
-# ... existing code ...
-
 def get_image_download_link(img_array, filename):
     """Helper to convert image to base64 for JS download."""
     img_pil = Image.fromarray(img_array)
@@ -165,20 +138,51 @@ def get_image_download_link(img_array, filename):
     img_str = base64.b64encode(buffered.getvalue()).decode()
     return f"data:image/png;base64,{img_str}", filename
 
+# --- Streamlit UI ---
+st.set_page_config(page_title="Sticker AI Hub", layout="wide")
+
+# Initialize session state
+if 'extracted_stickers' not in st.session_state:
+    st.session_state.extracted_stickers = None
+if 'study_data' not in st.session_state:
+    st.session_state.study_data = None
+if 'last_file' not in st.session_state:
+    st.session_state.last_file = None
+
+# Sidebar Navigation
+st.sidebar.title("🧭 Navigation")
+page = st.sidebar.radio("Go to", ["🏠 Main Extractor", "🎓 Study Steps (Tutorial)"])
+
 # --- Page 1: Main Extractor ---
 if page == "🏠 Main Extractor":
     st.title("🎨 AI Sticker Extractor")
-    # ... rest of upload logic ...
+    st.markdown("Upload your sticker sheet and get transparent PNGs with shadows.")
+    
+    uploaded_file = st.file_uploader("Upload Image", type=["png", "jpg", "jpeg"], key="main_upload")
+    
+    if uploaded_file:
+        file_id = f"main_{uploaded_file.name}_{uploaded_file.size}"
+        if st.session_state.last_file != file_id:
+            st.session_state.extracted_stickers = None
+            st.session_state.last_file = file_id
+            st.rerun()
+
+        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Input Preview", use_container_width=True)
+
+        if st.button("🚀 Run Extraction"):
+            with st.spinner("Processing..."):
+                st.session_state.extracted_stickers = extract_stickers_logic(image)
 
     if st.session_state.extracted_stickers:
         st.success(f"Success! {len(st.session_state.extracted_stickers)} items found.")
         
-        # --- NEW: Bulk Download via JS ---
+        # Bulk Download Action
         if st.button("📸 Save All to Downloads (Individual Files)", type="primary"):
             js_code = ""
             for i, sticker in enumerate(st.session_state.extracted_stickers):
                 data_url, fname = get_image_download_link(sticker, f"sticker_{i+1}.png")
-                # JS to trigger immediate download
                 js_code += f"""
                 setTimeout(() => {{
                     const link = document.createElement('a');
@@ -187,14 +191,27 @@ if page == "🏠 Main Extractor":
                     document.body.appendChild(link);
                     link.click();
                     document.body.removeChild(link);
-                }}, {i * 300}); // Delay to prevent browser blocking
+                }}, {i * 300});
                 """
-            # Inject JS
             components.html(f"<script>{js_code}</script>", height=0)
-            st.info("Browser may ask for permission to download multiple files. Please click 'Allow'.")
+            st.info("Please 'Allow' multiple downloads in your browser.")
 
         st.markdown("---")
-        # ... rest of display logic ...
+        
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+            cols = st.columns(4)
+            for i, sticker in enumerate(st.session_state.extracted_stickers):
+                with cols[i % 4]:
+                    st.image(sticker, caption=f"Sticker {i+1}")
+                    img_byte_arr = BytesIO()
+                    Image.fromarray(sticker).save(img_byte_arr, format='PNG')
+                    st.download_button(label=f"💾 Save #{i+1}", data=img_byte_arr.getvalue(), 
+                                       file_name=f"sticker_{i+1}.png", mime="image/png", key=f"dl_{i}")
+                    zip_file.writestr(f"sticker_{i+1}.png", img_byte_arr.getvalue())
+        
+        st.download_button("📥 Download All (ZIP Archive)", data=zip_buffer.getvalue(), 
+                           file_name="stickers.zip", mime="application/zip", key="dl_zip_main")
 
 # --- Page 2: Study Steps ---
 elif page == "🎓 Study Steps (Tutorial)":
@@ -218,11 +235,10 @@ elif page == "🎓 Study Steps (Tutorial)":
                 st.session_state.study_data = get_study_steps_logic(image)
 
     if st.session_state.study_data:
-        # Dictionary mapping steps to Thai explanations
         tech_descriptions = {
             "1. Original": """
                 **เทคนิค:** Base Image Loading (BGR to RGB)
-                **คำอธิบาย:** ขั้นตอนเริ่มต้นคือการโหลดภาพดิจิทัลเข้ามา ใน OpenCV ภาพจะถูกเก็บในรูปแบบ BGR แต่เพื่อแสดงผลบนเว็บเราต้องแปลงเป็น RGB นี่คือข้อมูลดิบที่จะถูกนำไปเข้ากระบวนการวิเคราะห์พิกเซลในขั้นถัดไป
+                **คำอธิบาย:** ขั้นตอนเริ่มต้นคือการโหลดภาพดิจิทัลเข้ามา ใน OpenCV ภาพจะถูกเก็บในรูปแบบ BGR แต่เพื่อแสดงผลบนเว็บเราต้องแปลงเป็น RGB
                 ```python
                 image = cv2.imread(path)
                 image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -230,7 +246,7 @@ elif page == "🎓 Study Steps (Tutorial)":
             """,
             "2. HSV White Mask": """
                 **เทคนิค:** Color Space Isolation (HSV Thresholding)
-                **คำอธิบาย:** เราแปลงภาพเป็นระบบสี HSV (Hue, Saturation, Value) เพราะสามารถแยก 'ความสว่าง' (Value) ออกจาก 'สี' ได้ดีกว่า RGB เราจึงกำหนดช่วงพิกเซลที่มี Saturation ต่ำ (สีไม่สด) และ Value สูง (สว่างมาก) เพื่อคัดแยกเฉพาะ 'ขอบขาว' ออกจากพื้นหลังสีชมพู
+                **คำอธิบาย:** เราแปลงภาพเป็นระบบสี HSV เพื่อคัดแยกเฉพาะ 'ขอบขาว' ออกจากพื้นหลังสีชมพู
                 ```python
                 hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
                 lower_white = np.array([0, 0, 190]) 
@@ -240,18 +256,16 @@ elif page == "🎓 Study Steps (Tutorial)":
             """,
             "3. Morphological Cleaning": """
                 **เทคนิค:** Morphological Operations (Opening & Closing)
-                **คำอธิบาย:** หน้ากากที่ได้มักจะมีจุดรบกวน (Noise) เราใช้ **Opening** (การกร่อนแล้วขยาย) เพื่อลบจุดเล็กๆ ทิ้ง และตามด้วย **Closing** (การขยายแล้วกร่อน) เพื่อเชื่อมรอยโหว่ในเส้นขอบให้กลายเป็นวงปิดที่สมบูรณ์
+                **คำอธิบาย:** ใช้ Opening เพื่อลบจุดรบกวน (Noise) และ Closing เพื่อเชื่อมรอยโหว่ในเส้นขอบ
                 ```python
                 kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-                # Remove noise
                 cleaned = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-                # Fill small holes
                 cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel)
                 ```
             """,
             "4. Object Detection": """
                 **เทคนิค:** Contour Detection & Bounding Box Filtering
-                **คำอธิบาย:** ใช้ Algorithm `findContours` เพื่อตรวจจับกลุ่มพิกเซลสีขาวที่เชื่อมต่อกัน จากนั้นคำนวณหา Bounding Box (กรอบสี่เหลี่ยม) และกรองเอาเฉพาะวัตถุที่มีขนาดใหญ่พอ เพื่อกำจัดเศษพิกเซลที่ไม่เกี่ยวข้องออกไป
+                **คำอธิบาย:** ใช้ `findContours` ตรวจจับกลุ่มพิกเซลขาวที่เชื่อมต่อกัน และกรองวัตถุที่ขนาดเล็กเกินไปออก
                 ```python
                 contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 for cnt in contours:
@@ -262,41 +276,35 @@ elif page == "🎓 Study Steps (Tutorial)":
             """,
             "5. Solid Filled Mask (Internal Detail Preserved)": """
                 **เทคนิค:** Filled Contour Masking (Solid Alpha Channel)
-                **คำอธิบาย:** **(ขั้นตอนสำคัญ)** แทนที่จะใช้พิกเซลสีขาวเดิม เรานำเส้นรอบรูป (Contour) มาวาดใหม่แบบถมสีทึบ (Thickness = -1) เพื่อสร้างหน้ากากรูปทรงที่ "ทึบ 100%" วิธีนี้จะช่วยรักษาทุกรายละเอียดภายใน (เช่น ตัวละคร, เสื้อผ้า) ไม่ให้โปร่งใสหายไปตามสีขาวของขอบ
+                **คำอธิบาย:** **(สำคัญ)** ถมสีทึบลงในเส้นรอบรูป เพื่อรักษาพิกเซลภายในไม่ให้หายไปตามสีขอบขาว
                 ```python
-                # thickness=-1 means fill the shape
                 cv2.drawContours(mask, [contour], -1, 255, thickness=-1)
                 ```
             """,
             "6. Generated Shadow Layer": """
                 **เทคนิค:** Gaussian Blur & Affine Transformation
-                **คำอธิบาย:** สร้างเงาโดยนำหน้ากากทึบมาทำ Gaussian Blur เพื่อให้ขอบนุ่มนวล และใช้การ Warp Transformation เพื่อขยับตำแหน่งพิกเซล (Offset) ไปทางขวาและล่างเล็กน้อย สร้างมิติความลึกให้กับวัตถุ
+                **คำอธิบาย:** ทำเบลอหน้ากากทึบเพื่อให้ขอบเงานุ่มนวล และขยับตำแหน่ง (Offset) ไปทางขวาและล่าง
                 ```python
                 shadow = cv2.GaussianBlur(mask, (51, 51), 0)
-                # Shift shadow by 12, 12 pixels
                 M = np.float32([[1, 0, 12], [0, 1, 12]])
                 shifted = cv2.warpAffine(shadow, M, (w, h))
                 ```
             """,
             "7. Final Stylized Result": """
                 **เทคนิค:** Alpha Blending & Layer Compositing
-                **คำอธิบาย:** รวมเลเยอร์เข้าด้วยกันโดยใช้การผสมค่า Alpha (Transparency) เราวางเลเยอร์เงาไว้ล่างสุด แล้ววางตัวละครที่ตัดตามหน้ากากทึบทับไว้ด้านบน ผลลัพธ์ที่ได้คือภาพ PNG โปร่งใสที่มีขอบเนียนสวยและมีมิติ
+                **คำอธิบาย:** รวมเลเยอร์เงาและตัวละครเข้าด้วยกันโดยใช้ค่าความโปร่งใส (Alpha)
                 ```python
-                # Sticker with solid mask as alpha channel
                 sticker_rgba[:, :, 3] = solid_mask
-                # Blend with shadow layer (simplified)
                 final[:, :, 3] = shadow_alpha + sticker_alpha
                 ```
             """
         }
-
         for title, img in st.session_state.study_data.items():
             st.subheader(title)
             st.image(img, use_container_width=True)
-            # Display tech description if available
             if title in tech_descriptions:
                 st.info(tech_descriptions[title])
             st.divider()
 
 st.sidebar.markdown("---")
-st.sidebar.info("Learn & Create stickers with AI")
+st.sidebar.info("Developed with ❤️ using OpenCV and Streamlit.")
