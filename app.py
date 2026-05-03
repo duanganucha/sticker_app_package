@@ -152,44 +152,49 @@ if 'study_data' not in st.session_state:
 if 'last_file' not in st.session_state:
     st.session_state.last_file = None
 
+import streamlit.components.v1 as components
+import base64
+
+# ... existing code ...
+
+def get_image_download_link(img_array, filename):
+    """Helper to convert image to base64 for JS download."""
+    img_pil = Image.fromarray(img_array)
+    buffered = BytesIO()
+    img_pil.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode()
+    return f"data:image/png;base64,{img_str}", filename
+
 # --- Page 1: Main Extractor ---
 if page == "🏠 Main Extractor":
     st.title("🎨 AI Sticker Extractor")
-    st.markdown("Upload your sticker sheet and get transparent PNGs with shadows.")
-    
-    uploaded_file = st.file_uploader("Upload Image", type=["png", "jpg", "jpeg"], key="main_upload")
-    
-    if uploaded_file:
-        file_id = f"{uploaded_file.name}_{uploaded_file.size}"
-        if st.session_state.last_file != file_id:
-            st.session_state.extracted_stickers = None
-            st.session_state.last_file = file_id
-            st.rerun()
-
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Input Preview", use_container_width=True)
-
-        if st.button("🚀 Run Extraction"):
-            with st.spinner("Processing..."):
-                st.session_state.extracted_stickers = extract_stickers_logic(image)
+    # ... rest of upload logic ...
 
     if st.session_state.extracted_stickers:
         st.success(f"Success! {len(st.session_state.extracted_stickers)} items found.")
-        zip_buffer = BytesIO()
-        with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
-            cols = st.columns(4)
-            for i, sticker in enumerate(st.session_state.extracted_stickers):
-                with cols[i % 4]:
-                    st.image(sticker, caption=f"Sticker {i+1}")
-                    img_byte_arr = BytesIO()
-                    Image.fromarray(sticker).save(img_byte_arr, format='PNG')
-                    st.download_button(label=f"💾 Save #{i+1}", data=img_byte_arr.getvalue(), 
-                                       file_name=f"sticker_{i+1}.png", mime="image/png", key=f"dl_{i}")
-                    zip_file.writestr(f"sticker_{i+1}.png", img_byte_arr.getvalue())
         
-        st.download_button("📥 Download All (ZIP)", data=zip_buffer.getvalue(), 
-                           file_name="stickers.zip", mime="application/zip")
+        # --- NEW: Bulk Download via JS ---
+        if st.button("📸 Save All to Downloads (Individual Files)", type="primary"):
+            js_code = ""
+            for i, sticker in enumerate(st.session_state.extracted_stickers):
+                data_url, fname = get_image_download_link(sticker, f"sticker_{i+1}.png")
+                # JS to trigger immediate download
+                js_code += f"""
+                setTimeout(() => {{
+                    const link = document.createElement('a');
+                    link.href = '{data_url}';
+                    link.download = '{fname}';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                }}, {i * 300}); // Delay to prevent browser blocking
+                """
+            # Inject JS
+            components.html(f"<script>{js_code}</script>", height=0)
+            st.info("Browser may ask for permission to download multiple files. Please click 'Allow'.")
+
+        st.markdown("---")
+        # ... rest of display logic ...
 
 # --- Page 2: Study Steps ---
 elif page == "🎓 Study Steps (Tutorial)":
